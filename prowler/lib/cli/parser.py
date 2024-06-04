@@ -10,7 +10,6 @@ from prowler.config.config import (
     default_fixer_config_file_path,
     default_output_directory,
     finding_statuses,
-    get_default_mute_file_path,
     valid_severities,
 )
 from prowler.providers.common.arguments import (
@@ -147,8 +146,8 @@ Detailed documentation at https://docs.prowler.com
             "-M",
             nargs="+",
             help="Output modes, by default csv and json-oscf are saved. When using AWS Security Hub integration, json-asff output is also saved.",
-            default=["csv", "json-ocsf"],
-            choices=["csv", "json-asff", "json-ocsf"],
+            default=["csv", "json-ocsf", "html"],
+            choices=["csv", "json-asff", "json-ocsf", "html"],
         )
         common_outputs_parser.add_argument(
             "--output-filename",
@@ -320,20 +319,18 @@ Detailed documentation at https://docs.prowler.com
         list_group.add_argument(
             "--list-fixer",
             "--list-fixers",
+            "--list-remediations",
             action="store_true",
             help="List fixers available for the provider",
         )
 
     def __init_mutelist_parser__(self):
         mutelist_subparser = self.common_providers_parser.add_argument_group("Mutelist")
-        provider = sys.argv[1] if len(sys.argv) > 1 else "aws"
         mutelist_subparser.add_argument(
             "--mutelist-file",
             "-w",
             nargs="?",
-            # TODO(PRWLR-3519): this has to be done in the provider class not here
-            default=get_default_mute_file_path(provider),
-            help="Path for mutelist yaml file. See example prowler/config/<provider>_mutelist.yaml for reference and format. For AWS provider, it also accepts AWS DynamoDB Table, Lambda ARNs or S3 URIs, see more in https://docs.prowler.cloud/en/latest/tutorials/mutelist/",
+            help="Path for mutelist YAML file. See example prowler/config/<provider>_mutelist.yaml for reference and format. For AWS provider, it also accepts AWS DynamoDB Table, Lambda ARNs or S3 URIs, see more in https://docs.prowler.cloud/en/latest/tutorials/mutelist/",
         )
 
     def __init_config_parser__(self):
@@ -378,5 +375,5 @@ Detailed documentation at https://docs.prowler.com
         third_party_subparser.add_argument(
             "--slack",
             action="store_true",
-            help="Send a summary of the execution with a Slack APP in your channel. Environment variables SLACK_API_TOKEN and SLACK_CHANNEL_ID are required (see more in https://docs.prowler.cloud/en/latest/tutorials/integrations/#slack).",
+            help="Send a summary of the execution with a Slack APP in your channel. Environment variables SLACK_API_TOKEN and SLACK_CHANNEL_NAME are required (see more in https://docs.prowler.cloud/en/latest/tutorials/integrations/#slack).",
         )

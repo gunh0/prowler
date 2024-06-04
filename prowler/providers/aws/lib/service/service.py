@@ -15,11 +15,22 @@ MAX_WORKERS = 10
 class AWSService:
     """The AWSService class offers a parent class for each AWS Service to generate:
     - AWS Regional Clients
-    - Shared information like the account ID and ARN, the the AWS partition and the checks audited
+    - Shared information like the account ID and ARN, the AWS partition and the checks audited
     - AWS Session
     - Thread pool for the __threading_call__
     - Also handles if the AWS Service is Global
     """
+
+    failed_checks = set()
+
+    @classmethod
+    def set_failed_check(cls, check_id=None, arn=None):
+        if check_id is not None and arn is not None:
+            cls.failed_checks.add((check_id.split(".")[-1], arn))
+
+    @classmethod
+    def is_failed_check(cls, check_id, arn):
+        return (check_id.split(".")[-1], arn) in cls.failed_checks
 
     def __init__(self, service: str, provider: AwsProvider, global_service=False):
         # Audit Information

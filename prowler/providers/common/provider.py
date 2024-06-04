@@ -1,5 +1,19 @@
+import importlib
+import pkgutil
+import sys
 from abc import ABC, abstractmethod
-from typing import Any
+from importlib import import_module
+from typing import Any, Optional
+
+from prowler.config.config import get_default_mute_file_path
+from prowler.lib.logger import logger
+from prowler.lib.mutelist.mutelist import (
+    get_mutelist_file_from_local_file,
+    validate_mutelist,
+)
+
+providers_path = "prowler.providers"
+
 
 # TODO: with this we can enforce that all classes ending with "Provider" needs to inherint from the Provider class
 # class ProviderMeta:
@@ -15,6 +29,9 @@ from typing import Any
 
 # TODO: enforce audit_metadata for all the providers
 class Provider(ABC):
+    _global: Optional["Provider"] = None
+    _mutelist: dict
+    _mutelist_file_path: str
     """
     The Provider class is an abstract base class that defines the interface for all provider classes in the auditing system.
 
@@ -142,21 +159,85 @@ class Provider(ABC):
         return set()
 
     @property
-    @abstractmethod
     def mutelist(self):
         """
         mutelist method returns the provider's mutelist.
-
-        This method needs to be created in each provider.
         """
-        raise NotImplementedError()
+        return self._mutelist
+
+    @property
+    def mutelist_file_path(self):
+        """
+        mutelist method returns the provider's mutelist file path.
+        """
+        return self._mutelist_file_path
 
     @mutelist.setter
-    @abstractmethod
-    def mutelist(self, path: str):
+    def mutelist(self, mutelist_path):
         """
         mutelist.setter sets the provider's mutelist.
-
-        This method needs to be created in each provider.
         """
-        raise NotImplementedError()
+        # Set default mutelist path if none is set
+        if not mutelist_path:
+            mutelist_path = get_default_mute_file_path(self.type)
+        if mutelist_path:
+            mutelist = get_mutelist_file_from_local_file(mutelist_path)
+            mutelist = validate_mutelist(mutelist)
+        else:
+            mutelist = {}
+
+        self._mutelist = mutelist
+        self._mutelist_file_path = mutelist_path
+
+    @staticmethod
+    def get_global_provider() -> "Provider":
+        return Provider._global
+
+    @staticmethod
+    def set_global_provider(arguments):
+        try:
+            provider_class_path = (
+                f"{providers_path}.{arguments.provider}.{arguments.provider}_provider"
+            )
+            provider_class_name = f"{arguments.provider.capitalize()}Provider"
+            provider_class = getattr(
+                import_module(provider_class_path), provider_class_name
+            )
+            if not isinstance(Provider._global, provider_class):
+                global_provider = provider_class(arguments)
+
+            Provider._global = global_provider
+        except TypeError as error:
+            logger.critical(
+                f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+            sys.exit(1)
+        except Exception as error:
+            logger.critical(
+                f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+            sys.exit(1)
+
+    @staticmethod
+    def get_available_providers() -> list[str]:
+        """get_available_providers returns a list of the available providers"""
+        providers = []
+        # Dynamically import the package based on its string path
+        prowler_providers = importlib.import_module(providers_path)
+        # Iterate over all modules found in the prowler_providers package
+        for _, provider, ispkg in pkgutil.iter_modules(prowler_providers.__path__):
+            if provider != "common" and ispkg:
+                providers.append(provider)
+        return providers
+
+    @staticmethod
+    def update_provider_config(audit_config: dict, variable: str, value: str):
+        try:
+            if audit_config and variable in audit_config:
+                audit_config[variable] = value
+
+            return audit_config
+        except Exception as error:
+            logger.error(
+                f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}] -- {error}"
+            )

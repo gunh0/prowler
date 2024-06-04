@@ -16,7 +16,7 @@ from prowler.lib.banner import print_banner
 warnings.filterwarnings("ignore")
 
 cli = sys.modules["flask.cli"]
-print_banner(verbose=False)
+print_banner()
 print(
     f"{Fore.GREEN}Loading all CSV files from the folder {folder_path_overview} ...\n{Style.RESET_ALL}"
 )
@@ -27,7 +27,7 @@ cli.show_server_banner = lambda *x: click.echo(
 # Initialize the app - incorporate css
 dashboard = dash.Dash(
     __name__,
-    external_stylesheets=[dbc.themes.DARKLY],
+    external_stylesheets=[dbc.themes.FLATLY],
     use_pages=True,
     suppress_callback_exceptions=True,
     title="Prowler Dashboard",
@@ -60,7 +60,9 @@ def generate_nav_links(current_path):
         link_content = html.Span(
             [
                 html.Img(src=icon_url, className="w-5"),
-                html.Span(page["name"], className="font-medium text-base leading-6"),
+                html.Span(
+                    page["name"], className="font-medium text-base leading-6 text-white"
+                ),
             ],
             className="flex justify-center lg:justify-normal items-center gap-x-3 py-2 px-3",
         )
@@ -96,7 +98,8 @@ def generate_help_menu():
                     [
                         html.Img(src=link["icon"], className="w-5"),
                         html.Span(
-                            link["title"], className="font-medium text-base leading-6"
+                            link["title"],
+                            className="font-medium text-base leading-6 text-white",
                         ),
                     ],
                     className="flex items-center gap-x-3 py-2 px-3",
@@ -160,7 +163,7 @@ def update_nav_bar(pathname):
                                     html.Img(src="assets/favicon.ico", className="w-5"),
                                     "Subscribe to prowler SaaS",
                                 ],
-                                className="flex items-center gap-x-3",
+                                className="flex items-center gap-x-3 text-white",
                             ),
                         ],
                         href="https://prowler.com/",

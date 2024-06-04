@@ -1,3 +1,4 @@
+from datetime import datetime
 from unittest.mock import patch
 
 import botocore
@@ -88,6 +89,7 @@ class Test_RDS_Service:
             EnableCloudwatchLogsExports=["audit", "error"],
             MultiAZ=True,
             DBParameterGroupName="test",
+            DBClusterIdentifier="cluster-postgres",
             Tags=[
                 {"Key": "test", "Value": "test"},
             ],
@@ -110,6 +112,7 @@ class Test_RDS_Service:
         assert rds.db_instances[0].deletion_protection
         assert rds.db_instances[0].auto_minor_version_upgrade
         assert rds.db_instances[0].multi_az
+        assert rds.db_instances[0].cluster_id
         assert rds.db_instances[0].tags == [
             {"Key": "test", "Value": "test"},
         ]
@@ -152,6 +155,33 @@ class Test_RDS_Service:
             if parameter["ParameterName"] == "rds.force_ssl":
                 assert parameter["ParameterValue"] == "1"
 
+    @mock_aws
+    def test__describe_db_certificate__(self):
+        conn = client("rds", region_name=AWS_REGION_US_EAST_1)
+        conn.create_db_parameter_group(
+            DBParameterGroupName="test",
+            DBParameterGroupFamily="default.postgres9.3",
+            Description="test parameter group",
+        )
+        conn.create_db_instance(
+            DBInstanceIdentifier="db-master-1",
+            AllocatedStorage=10,
+            Engine="postgres",
+            DBName="staging-postgres",
+            DBInstanceClass="db.m1.small",
+            DBParameterGroupName="test",
+            CACertificateIdentifier="rds-cert-2015",
+        )
+
+        # RDS client for this test class
+        aws_provider = set_mocked_aws_provider([AWS_REGION_US_EAST_1])
+        rds = RDS(aws_provider)
+        assert len(rds.db_instances) == 1
+        assert rds.db_instances[0].id == "db-master-1"
+        assert rds.db_instances[0].region == AWS_REGION_US_EAST_1
+        for cert in rds.db_instances[0].cert:
+            assert cert["ValidTill"] < datetime.now()
+
     # Test RDS Describe DB Snapshots
     @mock_aws
     def test__describe_db_snapshots__(self):
@@ -181,8 +211,8 @@ class Test_RDS_Service:
     def test__describe_db_clusters__(self):
         conn = client("rds", region_name=AWS_REGION_US_EAST_1)
         cluster_id = "db-master-1"
-        conn.create_db_parameter_group(
-            DBParameterGroupName="test",
+        conn.create_db_cluster_parameter_group(
+            DBClusterParameterGroupName="test",
             DBParameterGroupFamily="default.postgres9.3",
             Description="test parameter group",
         )
@@ -230,6 +260,8 @@ class Test_RDS_Service:
             {"Key": "test", "Value": "test"},
         ]
         assert rds.db_clusters[db_cluster_arn].parameter_group == "test"
+        assert rds.db_clusters[db_cluster_arn].force_ssl == "0"
+        assert rds.db_clusters[db_cluster_arn].require_secure_transport == "OFF"
 
     # Test RDS Describe DB Cluster Snapshots
     @mock_aws

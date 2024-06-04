@@ -1,7 +1,9 @@
 import os
 import pathlib
+import re
 import sys
 from argparse import Namespace
+from datetime import datetime
 
 from boto3 import client, session
 from boto3.session import Session
@@ -9,15 +11,21 @@ from botocore.config import Config
 from botocore.credentials import RefreshableCredentials
 from botocore.session import get_session
 from colorama import Fore, Style
+from pytz import utc
+from tzlocal import get_localzone
 
 from prowler.config.config import (
     aws_services_json_file,
+    get_default_mute_file_path,
     load_and_validate_config_file,
     load_and_validate_fixer_config_file,
 )
 from prowler.lib.check.check import list_modules, recover_checks_from_service
 from prowler.lib.logger import logger
-from prowler.lib.mutelist.mutelist import parse_mutelist_file
+from prowler.lib.mutelist.mutelist import (
+    get_mutelist_file_from_local_file,
+    validate_mutelist,
+)
 from prowler.lib.utils.utils import open_file, parse_json_file, print_boxes
 from prowler.providers.aws.config import (
     AWS_STS_GLOBAL_ENDPOINT_REGION,
@@ -26,6 +34,11 @@ from prowler.providers.aws.config import (
 )
 from prowler.providers.aws.lib.arn.arn import parse_iam_credentials_arn
 from prowler.providers.aws.lib.arn.models import ARN
+from prowler.providers.aws.lib.mutelist.mutelist import (
+    get_mutelist_file_from_dynamodb,
+    get_mutelist_file_from_lambda,
+    get_mutelist_file_from_s3,
+)
 from prowler.providers.aws.lib.organizations.organizations import (
     get_organizations_metadata,
     parse_organizations_metadata,
@@ -54,7 +67,6 @@ class AwsProvider(Provider):
     _audit_config: dict
     _scan_unused_services: bool = False
     _enabled_regions: set = set()
-    _mutelist: dict = {}
     _output_options: AWSOutputOptions
     # TODO: this is not optional, enforce for all providers
     audit_metadata: Audit_Metadata
@@ -286,17 +298,48 @@ class AwsProvider(Provider):
 
     @property
     def mutelist(self):
+        """
+        mutelist method returns the provider's mutelist.
+        """
         return self._mutelist
 
     @mutelist.setter
     def mutelist(self, mutelist_path):
+        """
+        mutelist.setter sets the provider's mutelist.
+        """
+        # Set default mutelist path if none is set
+        if not mutelist_path:
+            mutelist_path = get_default_mute_file_path(self.type)
         if mutelist_path:
-            mutelist = parse_mutelist_file(
-                mutelist_path, self._session.current_session, self._identity.account
-            )
+            # Mutelist from S3 URI
+            if re.search("^s3://([^/]+)/(.*?([^/]+))$", mutelist_path):
+                mutelist = get_mutelist_file_from_s3(
+                    mutelist_path, self._session.current_session
+                )
+            # Mutelist from Lambda Function ARN
+            elif re.search(r"^arn:(\w+):lambda:", mutelist_path):
+                mutelist = get_mutelist_file_from_lambda(
+                    mutelist_path,
+                    self._session.current_session,
+                )
+            # Mutelist from DynamoDB ARN
+            elif re.search(
+                r"^arn:aws(-cn|-us-gov)?:dynamodb:[a-z]{2}-[a-z-]+-[1-9]{1}:[0-9]{12}:table\/[a-zA-Z0-9._-]+$",
+                mutelist_path,
+            ):
+                mutelist = get_mutelist_file_from_dynamodb(
+                    mutelist_path, self._session.current_session, self._identity.account
+                )
+            else:
+                mutelist = get_mutelist_file_from_local_file(mutelist_path)
+
+            mutelist = validate_mutelist(mutelist)
         else:
             mutelist = {}
+
         self._mutelist = mutelist
+        self._mutelist_file_path = mutelist_path
 
     @property
     def get_output_mapping(self):
@@ -324,7 +367,7 @@ class AwsProvider(Provider):
         - aws_account_id: is the AWS Account ID from which we want to get the AWS Organizations account metadata
 
         Returns:
-        - None if it is not unable to retrieve that data, and raises a logger.warning()
+        - AWSOrganizationsInfo object with the AWS Organizations metadata for the account to be audited.
         """
         try:
             logger.info(
@@ -344,6 +387,15 @@ class AwsProvider(Provider):
                     f"AWS Organizations metadata retrieved for account {aws_account_id}"
                 )
                 return organizations_metadata
+            else:
+                return AWSOrganizationsInfo(
+                    account_email="",
+                    account_name="",
+                    organization_account_arn="",
+                    organization_arn="",
+                    organization_id="",
+                    account_tags=[],
+                )
 
         except Exception as error:
             # If the account is not a delegated administrator for AWS Organizations a credentials error will be thrown
@@ -444,8 +496,6 @@ class AwsProvider(Provider):
         self,
         assumed_role_credentials: AWSCredentials,
     ) -> Session:
-        # FIXME: Boto3 returns the timestamp in UTC and the local TZ could be different so the expiration time could not work as expected
-        # PRWLR-3305
         try:
             # From botocore we can use RefreshableCredentials class, which has an attribute (refresh_using)
             # that needs to be a method without arguments that retrieves a new set of fresh credentials
@@ -473,25 +523,45 @@ class AwsProvider(Provider):
             )
             sys.exit(1)
 
-    # Refresh credentials method using assume role
-    # This method is called "adding ()" to the name, so it cannot accept arguments
-    # https://github.com/boto/botocore/blob/098cc255f81a25b852e1ecdeb7adebd94c7b1b73/botocore/credentials.py#L570
     # TODO: maybe this can be improved with botocore.credentials.DeferredRefreshableCredentials https://stackoverflow.com/a/75576540
     def refresh_credentials(self) -> dict:
+        """
+        Refresh credentials method using AWS STS Assume Role.
+
+        This method is called adding "()" to the name, so it cannot accept arguments
+        https://github.com/boto/botocore/blob/098cc255f81a25b852e1ecdeb7adebd94c7b1b73/botocore/credentials.py#L570
+        """
         logger.info("Refreshing assumed credentials...")
+
         # Since this method does not accept arguments, we need to get the original_session and the assumed role credentials
-        response = self.assume_role(
-            self._session.original_session, self._assumed_role_configuration.info
-        )
-        refreshed_credentials = dict(
-            # Keys of the dict has to be the same as those that are being searched in the parent class
-            # https://github.com/boto/botocore/blob/098cc255f81a25b852e1ecdeb7adebd94c7b1b73/botocore/credentials.py#L609
-            access_key=response.aws_access_key_id,
-            secret_key=response.aws_secret_access_key,
-            token=response.aws_session_token,
-            expiry_time=response.expiration.isoformat(),
-        )
-        logger.info(f"Refreshed Credentials: {refreshed_credentials}")
+        current_credentials = self._assumed_role_configuration.credentials
+        refreshed_credentials = {
+            "access_key": current_credentials.aws_access_key_id,
+            "secret_key": current_credentials.aws_secret_access_key,
+            "token": current_credentials.aws_session_token,
+            "expiry_time": (
+                current_credentials.expiration.isoformat()
+                if hasattr(current_credentials, "expiration")
+                else current_credentials.expiry_time.isoformat()
+            ),
+        }
+
+        if datetime.fromisoformat(refreshed_credentials["expiry_time"]) <= datetime.now(
+            get_localzone()
+        ):
+            assume_role_response = self.assume_role(
+                self._session.original_session, self._assumed_role_configuration.info
+            )
+            refreshed_credentials = dict(
+                # Keys of the dict has to be the same as those that are being searched in the parent class
+                # https://github.com/boto/botocore/blob/098cc255f81a25b852e1ecdeb7adebd94c7b1b73/botocore/credentials.py#L609
+                access_key=assume_role_response.aws_access_key_id,
+                secret_key=assume_role_response.aws_secret_access_key,
+                token=assume_role_response.aws_session_token,
+                expiry_time=assume_role_response.expiration.isoformat(),
+            )
+            logger.info(f"Refreshed Credentials: {refreshed_credentials}")
+
         return refreshed_credentials
 
     def print_credentials(self):
@@ -646,7 +716,7 @@ class AwsProvider(Provider):
                 audited_regions.add(region)
         return audited_regions
 
-    def get_tagged_resources(self, input_resource_tags: list[str]):
+    def get_tagged_resources(self, input_resource_tags: list[str]) -> list[str]:
         """
         Returns a list of the resources that are going to be scanned based on the given input tags.
 
@@ -781,21 +851,22 @@ class AwsProvider(Provider):
                 assume_role_arguments["SerialNumber"] = mfa_info.arn
                 assume_role_arguments["TokenCode"] = mfa_info.totp
 
-            # Set the STS Endpoint Region
-            # TODO: review the STS endpoint region removal
-            # https://github.com/prowler-cloud/prowler/pull/3046
-            # if sts_endpoint_region is None:
-            #     sts_endpoint_region = AWS_STS_GLOBAL_ENDPOINT_REGION
-
             sts_client = create_sts_session(session, AWS_STS_GLOBAL_ENDPOINT_REGION)
             assumed_credentials = sts_client.assume_role(**assume_role_arguments)
+            # Convert the UTC datetime object to your local timezone
+            credentials_expiration_local_time = (
+                assumed_credentials["Credentials"]["Expiration"]
+                .replace(tzinfo=utc)
+                .astimezone(get_localzone())
+            )
+
             return AWSCredentials(
                 aws_access_key_id=assumed_credentials["Credentials"]["AccessKeyId"],
                 aws_session_token=assumed_credentials["Credentials"]["SessionToken"],
                 aws_secret_access_key=assumed_credentials["Credentials"][
                     "SecretAccessKey"
                 ],
-                expiration=assumed_credentials["Credentials"]["Expiration"],
+                expiration=credentials_expiration_local_time,
             )
         except Exception as error:
             logger.critical(
@@ -805,18 +876,25 @@ class AwsProvider(Provider):
 
     def get_aws_enabled_regions(self, current_session: Session) -> set:
         """get_aws_enabled_regions returns a set of enabled AWS regions"""
+        try:
+            # EC2 Client to check enabled regions
+            service = "ec2"
+            default_region = self.get_default_region(service)
+            ec2_client = current_session.client(service, region_name=default_region)
 
-        # EC2 Client to check enabled regions
-        service = "ec2"
-        default_region = self.get_default_region(service)
-        ec2_client = current_session.client(service, region_name=default_region)
+            enabled_regions = set()
+            # With AllRegions=False we only get the enabled regions for the account
+            for region in ec2_client.describe_regions(AllRegions=False).get(
+                "Regions", []
+            ):
+                enabled_regions.add(region.get("RegionName"))
 
-        enabled_regions = set()
-        # With AllRegions=False we only get the enabled regions for the account
-        for region in ec2_client.describe_regions(AllRegions=False).get("Regions", []):
-            enabled_regions.add(region.get("RegionName"))
-
-        return enabled_regions
+            return enabled_regions
+        except Exception as error:
+            logger.error(
+                f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+            return set()
 
     # TODO: review this function
     # Maybe this should be done within the AwsProvider and not in __main__.py

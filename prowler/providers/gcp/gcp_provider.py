@@ -10,7 +10,6 @@ from googleapiclient.errors import HttpError
 
 from prowler.config.config import load_and_validate_config_file
 from prowler.lib.logger import logger
-from prowler.lib.mutelist.mutelist import parse_mutelist_file
 from prowler.lib.utils.utils import print_boxes
 from prowler.providers.common.models import Audit_Metadata
 from prowler.providers.common.provider import Provider
@@ -169,18 +168,6 @@ class GcpProvider(Provider):
             # "partition": "identity.partition",
         }
 
-    @property
-    def mutelist(self):
-        return self._mutelist
-
-    @mutelist.setter
-    def mutelist(self, mutelist_path):
-        if mutelist_path:
-            mutelist = parse_mutelist_file(mutelist_path)
-        else:
-            mutelist = {}
-        self._mutelist = mutelist
-
     def setup_session(self, credentials_file):
         try:
             if credentials_file:
@@ -233,9 +220,9 @@ class GcpProvider(Provider):
                 response = request.execute()
 
                 for project in response.get("projects", []):
-                    labels = ""
+                    labels = []
                     for key, value in project.get("labels", {}).items():
-                        labels += f"{key}:{value},"
+                        labels.append(f"{key}:{value}")
 
                     project_id = project["projectId"]
                     gcp_project = GCPProject(
@@ -243,7 +230,7 @@ class GcpProvider(Provider):
                         id=project_id,
                         name=project["name"],
                         lifecycle_state=project["lifecycleState"],
-                        labels=labels.rstrip(","),
+                        labels=labels,
                     )
 
                     if (
@@ -262,19 +249,25 @@ class GcpProvider(Provider):
                 )
 
         except HttpError as http_error:
-
-            if http_error.status_code == 403 and "organizations" in http_error.uri:
+            if "Cloud Resource Manager API has not been used" in str(http_error):
+                logger.critical(
+                    "Cloud Resource Manager API has not been used before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/cloudresourcemanager.googleapis.com/ then retry."
+                )
+                sys.exit(1)
+            else:
                 logger.error(
-                    f"{http_error.__class__.__name__}[{http_error.__traceback__.tb_lineno}]: {http_error.error_details} to get Organizations data."
+                    f"{http_error.__class__.__name__}[{http_error.__traceback__.tb_lineno}]: {http_error}"
                 )
         except Exception as error:
-            logger.error(
-                f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
-            )
-            # TODO: we cannot print this for whatever exception
-            print(
-                f"\n{Fore.YELLOW}Cloud Resource Manager API {Style.RESET_ALL}has not been used before or it is disabled.\nEnable it by visiting https://console.developers.google.com/apis/api/cloudresourcemanager.googleapis.com/ then retry."
-            )
+            if error.__class__.__name__ == "RefreshError":
+                logger.critical(
+                    "Google Cloud SDK has not been authenticated or the credentials have expired. Authenticate by running 'gcloud auth application-default login' then retry."
+                )
+            else:
+                logger.critical(
+                    f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+                )
+            sys.exit(1)
         finally:
             return projects
 
@@ -301,7 +294,7 @@ class GcpProvider(Provider):
         except HttpError as http_error:
             if http_error.status_code == 403 and "organizations" in http_error.uri:
                 logger.error(
-                    f"{http_error.__class__.__name__}[{http_error.__traceback__.tb_lineno}]: {http_error.error_details} to get Organizations data."
+                    f"{http_error.__class__.__name__}[{http_error.__traceback__.tb_lineno}]: {http_error.error_details} to get Organizations display name."
                 )
             else:
                 logger.error(

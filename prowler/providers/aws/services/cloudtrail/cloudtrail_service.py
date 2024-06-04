@@ -17,10 +17,11 @@ class Cloudtrail(AWSService):
         self.trail_arn_template = f"arn:{self.audited_partition}:cloudtrail:{self.region}:{self.audited_account}:trail"
         self.trails = {}
         self.__threading_call__(self.__get_trails__)
-        self.__get_trail_status__()
-        self.__get_insight_selectors__()
-        self.__get_event_selectors__()
-        self.__list_tags_for_resource__()
+        if self.trails:
+            self.__get_trail_status__()
+            self.__get_insight_selectors__()
+            self.__get_event_selectors__()
+            self.__list_tags_for_resource__()
 
     def __get_trail_arn_template__(self, region):
         return (
@@ -35,6 +36,10 @@ class Cloudtrail(AWSService):
             describe_trails = regional_client.describe_trails()["trailList"]
             trails_count = 0
             for trail in describe_trails:
+                # If a multi region trail was already retrieved in another region
+                if self.trails and trail["TrailARN"] in self.trails.keys():
+                    continue
+
                 if not self.audit_resources or (
                     is_resource_filtered(trail["TrailARN"], self.audit_resources)
                 ):
@@ -45,6 +50,8 @@ class Cloudtrail(AWSService):
                         kms_key_id = trail["KmsKeyId"]
                     if "CloudWatchLogsLogGroupArn" in trail:
                         log_group_arn = trail["CloudWatchLogsLogGroupArn"]
+                    if self.trails is None:
+                        self.trails = {}
                     self.trails[trail["TrailARN"]] = Trail(
                         name=trail["Name"],
                         is_multiregion=trail["IsMultiRegionTrail"],
@@ -61,12 +68,24 @@ class Cloudtrail(AWSService):
                         has_insight_selectors=trail.get("HasInsightSelectors"),
                     )
             if trails_count == 0:
+                if self.trails is None:
+                    self.trails = {}
                 self.trails[self.__get_trail_arn_template__(regional_client.region)] = (
                     Trail(
                         region=regional_client.region,
                     )
                 )
-
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "AccessDeniedException":
+                logger.error(
+                    f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+                )
+                if not self.trails:
+                    self.trails = None
+            else:
+                logger.error(
+                    f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+                )
         except Exception as error:
             logger.error(
                 f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
@@ -193,16 +212,21 @@ class Cloudtrail(AWSService):
         logger.info("CloudTrail - List Tags...")
         try:
             for trail in self.trails.values():
-                # Check if trails are in this account and region
-                if (
-                    trail.region == trail.home_region
-                    and self.audited_account in trail.arn
-                ):
-                    regional_client = self.regional_clients[trail.region]
-                    response = regional_client.list_tags(ResourceIdList=[trail.arn])[
-                        "ResourceTagList"
-                    ][0]
-                    trail.tags = response.get("TagsList")
+                try:
+                    # Check if trails are in this account and region
+                    if (
+                        trail.region == trail.home_region
+                        and self.audited_account in trail.arn
+                    ):
+                        regional_client = self.regional_clients[trail.region]
+                        response = regional_client.list_tags(
+                            ResourceIdList=[trail.arn]
+                        )["ResourceTagList"][0]
+                        trail.tags = response.get("TagsList")
+                except Exception as error:
+                    logger.error(
+                        f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+                    )
         except Exception as error:
             logger.error(
                 f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
@@ -219,6 +243,7 @@ class Trail(BaseModel):
     is_multiregion: bool = None
     home_region: str = None
     arn: str = None
+    # Region holds the region where the trail is audited
     region: str
     is_logging: bool = None
     log_file_validation_enabled: bool = None

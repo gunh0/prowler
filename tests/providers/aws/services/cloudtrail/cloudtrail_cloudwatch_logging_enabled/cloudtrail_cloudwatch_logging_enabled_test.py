@@ -24,7 +24,7 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
         )
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ):
             with mock.patch(
@@ -71,7 +71,7 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
         )
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -160,7 +160,7 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
         )
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -205,6 +205,7 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
                             report.status_extended,
                             f"Multiregion trail {trail_name_us} has been logging the last 24h.",
                         )
+                        assert report.region == AWS_REGION_US_EAST_1
                         assert report.resource_tags == []
                     if (
                         report.resource_id == trail_name_eu
@@ -217,6 +218,7 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
                             report.status_extended,
                             f"Single region trail {trail_name_eu} is not logging in the last 24h.",
                         )
+                        assert report.region == AWS_REGION_EU_WEST_1
                         assert report.resource_tags == []
 
     @mock_aws
@@ -250,7 +252,7 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
         )
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -293,6 +295,7 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
                             report.status_extended
                             == f"Single region trail {trail_name_us} has been logging the last 24h."
                         )
+                        assert report.region == AWS_REGION_US_EAST_1
                         assert report.resource_tags == []
                     if report.resource_id == trail_name_eu:
                         assert report.resource_id == trail_name_eu
@@ -302,4 +305,36 @@ class Test_cloudtrail_cloudwatch_logging_enabled:
                             report.status_extended
                             == f"Single region trail {trail_name_eu} is not logging in the last 24h or not configured to deliver logs."
                         )
+                        assert report.region == AWS_REGION_EU_WEST_1
                         assert report.resource_tags == []
+
+    @mock_aws
+    def test_access_denied(self):
+        from prowler.providers.aws.services.cloudtrail.cloudtrail_service import (
+            Cloudtrail,
+        )
+
+        with mock.patch(
+            "prowler.providers.common.provider.Provider.get_global_provider",
+            return_value=set_mocked_aws_provider(
+                [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
+            ),
+        ):
+            with mock.patch(
+                "prowler.providers.aws.services.cloudtrail.cloudtrail_cloudwatch_logging_enabled.cloudtrail_cloudwatch_logging_enabled.cloudtrail_client",
+                new=Cloudtrail(
+                    set_mocked_aws_provider(
+                        [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
+                    )
+                ),
+            ) as service_client:
+                # Test Check
+                from prowler.providers.aws.services.cloudtrail.cloudtrail_cloudwatch_logging_enabled.cloudtrail_cloudwatch_logging_enabled import (
+                    cloudtrail_cloudwatch_logging_enabled,
+                )
+
+                service_client.trails = None
+
+                check = cloudtrail_cloudwatch_logging_enabled()
+                result = check.execute()
+                assert len(result) == 0

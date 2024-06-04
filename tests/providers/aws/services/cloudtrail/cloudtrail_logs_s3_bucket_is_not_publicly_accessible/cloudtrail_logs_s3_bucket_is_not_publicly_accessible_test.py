@@ -20,7 +20,7 @@ class Test_cloudtrail_logs_s3_bucket_is_not_publicly_accessible:
         from prowler.providers.aws.services.s3.s3_service import S3
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -62,7 +62,7 @@ class Test_cloudtrail_logs_s3_bucket_is_not_publicly_accessible:
         from prowler.providers.aws.services.s3.s3_service import S3
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -133,7 +133,7 @@ class Test_cloudtrail_logs_s3_bucket_is_not_publicly_accessible:
         from prowler.providers.aws.services.s3.s3_service import S3
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -202,7 +202,7 @@ class Test_cloudtrail_logs_s3_bucket_is_not_publicly_accessible:
         from prowler.providers.aws.services.s3.s3_service import S3
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -253,7 +253,7 @@ class Test_cloudtrail_logs_s3_bucket_is_not_publicly_accessible:
         from prowler.providers.aws.services.s3.s3_service import S3
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_aws_provider(
                 [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
             ),
@@ -289,3 +289,40 @@ class Test_cloudtrail_logs_s3_bucket_is_not_publicly_accessible:
             )
             assert result[0].resource_tags == []
             assert result[0].region == AWS_REGION_US_EAST_1
+
+    @mock_aws
+    def test_access_denied(self):
+
+        from prowler.providers.aws.services.cloudtrail.cloudtrail_service import (
+            Cloudtrail,
+        )
+        from prowler.providers.aws.services.s3.s3_service import S3
+
+        with mock.patch(
+            "prowler.providers.common.provider.Provider.get_global_provider",
+            return_value=set_mocked_aws_provider(
+                [AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1]
+            ),
+        ), mock.patch(
+            "prowler.providers.aws.services.cloudtrail.cloudtrail_logs_s3_bucket_is_not_publicly_accessible.cloudtrail_logs_s3_bucket_is_not_publicly_accessible.cloudtrail_client",
+            new=Cloudtrail(
+                set_mocked_aws_provider([AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1])
+            ),
+        ) as cloudtrail_client, mock.patch(
+            "prowler.providers.aws.services.cloudtrail.cloudtrail_logs_s3_bucket_is_not_publicly_accessible.cloudtrail_logs_s3_bucket_is_not_publicly_accessible.s3_client",
+            new=S3(
+                set_mocked_aws_provider([AWS_REGION_US_EAST_1, AWS_REGION_EU_WEST_1])
+            ),
+        ) as s3_client:
+            # Test Check
+            from prowler.providers.aws.services.cloudtrail.cloudtrail_logs_s3_bucket_is_not_publicly_accessible.cloudtrail_logs_s3_bucket_is_not_publicly_accessible import (
+                cloudtrail_logs_s3_bucket_is_not_publicly_accessible,
+            )
+
+            cloudtrail_client.trails = None
+            s3_client.buckets = []
+
+            check = cloudtrail_logs_s3_bucket_is_not_publicly_accessible()
+            result = check.execute()
+
+            assert len(result) == 0

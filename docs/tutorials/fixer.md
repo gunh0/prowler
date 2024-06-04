@@ -1,4 +1,4 @@
-# Prowler Fixer
+# Prowler Fixer (remediation)
 Prowler allows you to fix some of the failed findings it identifies. You can use the `--fixer` flag to run the fixes that are available for the checks that failed.
 
 ```sh
@@ -8,10 +8,10 @@ prowler <provider> -c <check_to_fix_1> <check_to_fix_2> ... --fixer
 <img src="../img/fixer.png">
 
 ???+ note
-    You can see all the available fixes for each provider with the `--list-fixers` flag.
+    You can see all the available fixes for each provider with the `--list-remediations` or `--list-fixers flag.
 
     ```sh
-    prowler <provider> --list-fixer
+    prowler <provider> --list-fixers
     ```
 
 ## Writing a Fixer
@@ -101,10 +101,10 @@ For some fixers, you can have configurable parameters depending on your use case
 # Fixer configuration file
 aws:
   # ec2_ebs_default_encryption
-    # No configuration needed for this check
+  # No configuration needed for this check
 
   # s3_account_level_public_access_blocks
-    # No configuration needed for this check
+  # No configuration needed for this check
 
   # iam_password_policy_* checks:
   iam_password_policy:
@@ -117,4 +117,36 @@ aws:
       MaxPasswordAge: 90
       PasswordReusePrevention: 24
       HardExpiry: False
+
+  # accessanalyzer_enabled
+  accessanalyzer_enabled:
+    AnalyzerName: "DefaultAnalyzer"
+    AnalyzerType: "ACCOUNT_UNUSED_ACCESS"
+
+  # guardduty_is_enabled
+  # No configuration needed for this check
+
+  # securityhub_enabled
+  securityhub_enabled:
+    EnableDefaultStandards: True
+
+  # cloudtrail_multi_region_enabled
+  cloudtrail_multi_region_enabled:
+    TrailName: "DefaultTrail"
+    S3BucketName: "my-cloudtrail-bucket"
+    IsMultiRegionTrail: True
+    EnableLogFileValidation: True
+    # CloudWatchLogsLogGroupArn: "arn:aws:logs:us-east-1:123456789012:log-group:my-cloudtrail-log-group"
+    # CloudWatchLogsRoleArn: "arn:aws:iam::123456789012:role/my-cloudtrail-role"
+    # KmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+  # kms_cmk_rotation_enabled
+  # No configuration needed for this check
+
+  # ec2_ebs_snapshot_account_block_public_access
+  ec2_ebs_snapshot_account_block_public_access:
+    State: "block-all-sharing"
+
+  # ec2_instance_account_imdsv2_enabled
+  # No configuration needed for this check
 ```

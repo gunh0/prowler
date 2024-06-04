@@ -8,10 +8,9 @@ class Test_compute_public_address_shodan:
     def test_no_public_ip_addresses(self):
         compute_client = mock.MagicMock
         compute_client.addresses = {}
-        compute_client.audit_info = mock.MagicMock
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_gcp_provider(),
         ), mock.patch(
             "prowler.providers.gcp.services.compute.compute_public_address_shodan.compute_public_address_shodan.compute_client",
@@ -37,7 +36,6 @@ class Test_compute_public_address_shodan:
             "isp": "Microsoft Corporation",
             "country_name": "country_name",
         }
-        compute_client.audit_info = mock.MagicMock
 
         compute_client.addresses = [
             Address(
@@ -52,7 +50,7 @@ class Test_compute_public_address_shodan:
         ]
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=set_mocked_gcp_provider(),
         ), mock.patch(
             "prowler.providers.gcp.services.compute.compute_public_address_shodan.compute_public_address_shodan.compute_client",

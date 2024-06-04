@@ -3,7 +3,7 @@
 By default, Prowler will generate the CSV and JSON-[OCSF](https://schema.ocsf.io/) report.
 
 ```console
-prowler <provider> -M csv json-ocsf json-asff
+prowler <provider> -M csv json-ocsf json-asff html
 ```
 
 If you want to generate the JSON-ASFF (used by AWS Security Hub) report you can set it using the `-M/--output-modes/--output-formats`, like:
@@ -43,6 +43,7 @@ Prowler supports natively the following output formats:
 - CSV
 - JSON-OCSF
 - JSON-ASFF
+- HTML
 
 Hereunder is the structure for each of the supported report formats by Prowler:
 
@@ -92,8 +93,25 @@ The CSV format has a common format for all the providers. The following are the 
 - NOTES
 - PROWLER_VERSION
 
-???+ note
-    Since Prowler v3 the CSV column delimiter is the semicolon (`;`)
+#### CSV Headers Mapping
+
+The following table shows the mapping between the CSV headers and the the providers fields:
+
+| Open Source Consolidated    | AWS                         | GCP                          | AZURE                       | KUBERNETES                 |
+|-----------------------------|-----------------------------|------------------------------|-----------------------------|----------------------------|
+| auth_method                 | profile                     | principal                    | identity_type : identity_id | in-cluster/kube-config     |
+| provider                    | provider                    | provider                     | provider                    | provider                   |
+| account_uid                 | account_id / account_arn    | project_id                   | subscription_id             | cluster                    |
+| account_name                | account_name                | project_name                 | subscription_name           | context:context            |
+| account_email               | account_email               | N/A                          | N/A                         | N/A                        |
+| account_organization_uid    | account_organizations_arn   | project_organization_id      | tenant_id                   | N/A                        |
+| account_organization_name   | account_org                 | project_organization_display_name | tenant_domain          | N/A                        |
+| account_tags                | account_tags                | project_labels               | subscription_tags           | N/A                        |
+| partition                   | partition                   | N/A                          | region_config.name          | N/A                        |
+| region                      | region                      | location                     | location                    | namespace:namespace        |
+| resource_name               | resource_id                 | resource_name                | resource_name               | resource_name              |
+| resource_uid                | resource_arn                | resource_id                  | resource_id                 | resource_id                |
+| finding_uid                 | finding_unique_id           | finding_unique_id            | finding_unique_id           | finding_unique_id          |
 
 
 ### JSON-OCSF
@@ -103,10 +121,11 @@ The JSON-OCSF output format implements the [Detection Finding](https://schema.oc
 ```json
 [{
     "metadata": {
+        "event_code": "cloudtrail_multi_region_enabled",
         "product": {
             "name": "Prowler",
             "vendor_name": "Prowler",
-            "version": "4.0.0"
+            "version": "4.2.1"
         },
         "version": "1.1.0"
     },
@@ -123,7 +142,7 @@ The JSON-OCSF output format implements the [Detection Finding](https://schema.oc
         "desc": "Ensure CloudTrail is enabled in all regions",
         "product_uid": "prowler",
         "title": "Ensure CloudTrail is enabled in all regions",
-        "uid": "prowler-aws-cloudtrail_multi_region_enabled-xxxxxxxx-ap-northeast-1-xxxxxxxx"
+        "uid": "prowler-aws-cloudtrail_multi_region_enabled-123456789012-ap-northeast-1-123456789012"
     },
     "resources": [
         {
@@ -133,9 +152,12 @@ The JSON-OCSF output format implements the [Detection Finding](https://schema.oc
                 "name": "cloudtrail"
             },
             "labels": [],
-            "name": "xxxxxxxx",
+            "name": "123456789012",
             "type": "AwsCloudTrailTrail",
-            "uid": "arn:aws:cloudtrail:ap-northeast-1:xxxxxxxx:trail"
+            "uid": "arn:aws:cloudtrail:ap-northeast-1:123456789012:trail",
+            "data": {
+                "details": ""
+            },
         }
     ],
     "category_name": "Findings",
@@ -144,10 +166,10 @@ The JSON-OCSF output format implements the [Detection Finding](https://schema.oc
     "class_uid": 2004,
     "cloud": {
         "account": {
-            "name": "",
+            "name": "test-account",
             "type": "AWS_Account",
             "type_id": 10,
-            "uid": "xxxxxxxx"
+            "uid": "123456789012"
         },
         "org": {
             "name": "",
@@ -165,7 +187,49 @@ The JSON-OCSF output format implements the [Detection Finding](https://schema.oc
         ]
     },
     "type_uid": 200401,
-    "type_name": "Create"
+    "type_name": "Create",
+    "unmapped": {
+        "check_type": "Software and Configuration Checks,Industry and Regulatory Standards,CIS AWS Foundations Benchmark",
+        "related_url": "",
+        "categories": "forensics-ready",
+        "depends_on": "",
+        "related_to": "",
+        "notes": "",
+        "compliance": {
+            "CISA": [
+                "your-systems-3",
+                "your-data-2"
+            ],
+            "SOC2": [
+                "cc_2_1",
+                "cc_7_2",
+                "cc_a_1_2"
+            ],
+            "CIS-1.4": [
+                "3.1"
+            ],
+            "CIS-1.5": [
+                "3.1"
+            ],
+            "GDPR": [
+                "article_25",
+                "article_30"
+            ],
+            "AWS-Foundational-Security-Best-Practices": [
+                "cloudtrail"
+            ],
+            "ISO27001-2013": [
+                "A.12.4"
+            ],
+            "HIPAA": [
+                "164_308_a_1_ii_d",
+                "164_308_a_3_ii_a",
+                "164_308_a_6_ii",
+                "164_312_b",
+                "164_312_e_2_i"
+            ],
+        }
+    },
 }]
 ```
 
@@ -248,14 +312,16 @@ The following code is an example output of the [JSON-ASFF](https://docs.aws.amaz
 ???+ note
     Each finding is a `json` object within a list.
 
+### HTML
+
+The following image is an example of the HTML output:
+
+<img src="../img/reporting/html-output.png">
 
 ## V4 Deprecations
 
 Some deprecations have been made to unify formats and improve outputs.
 
-### HTML
-
-HTML output format has been deprecated in favor of the new dashboard, use it with `prowler dashboard`. You can read more about it at [here](dashboard.md).
 
 ### JSON
 
@@ -277,9 +343,9 @@ The following is the mapping between the native JSON and the Detection Finding f
 | StatusExtended | status_detail |
 | Severity | severity |
 | ResourceType | resources.type |
-| ResourceDetails | _Not mapped yet_ |
+| ResourceDetails | resources.data.details |
 | Description | finding_info.desc |
-| Risk | risk_details _Available from OCSF 1.2_ |
+| Risk | risk_details |
 | RelatedUrl | unmapped.related_url |
 | Remediation.Recommendation.Text | remediation.desc |
 | Remediation.Recommendation.Url | remediation.references |
@@ -298,7 +364,7 @@ The following is the mapping between the native JSON and the Detection Finding f
 | OrganizationsInfo.account_email | _Not mapped yet_ |
 | OrganizationsInfo.account_arn | _Not mapped yet_ |
 | OrganizationsInfo.account_org | cloud.org.name |
-| OrganizationsInfo.account_tags | cloud.account.labels _Available from OCSF 1.2_ |
+| OrganizationsInfo.account_tags | cloud.account.labels |
 | Region | resources.region |
 | ResourceId | resources.name |
 | ResourceArn | resources.uid |

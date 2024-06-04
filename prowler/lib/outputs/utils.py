@@ -1,12 +1,14 @@
-def unroll_list(listed_items: list):
+def unroll_list(listed_items: list, separator: str = "|"):
     unrolled_items = ""
-    separator = "|"
     if listed_items:
         for item in listed_items:
             if not unrolled_items:
                 unrolled_items = f"{item}"
             else:
-                unrolled_items = f"{unrolled_items} {separator} {item}"
+                if separator == "|":
+                    unrolled_items = f"{unrolled_items} {separator} {item}"
+                else:
+                    unrolled_items = f"{unrolled_items}{separator} {item}"
 
     return unrolled_items
 
@@ -84,3 +86,12 @@ def parse_json_tags(tags: list):
                 dict_tags.update(tag)
 
     return dict_tags
+
+
+def parse_html_string(str: str):
+    string = ""
+    for elem in str.split(" | "):
+        if elem:
+            string += f"\n&#x2022;{elem}\n"
+
+    return string

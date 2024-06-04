@@ -32,7 +32,7 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
         aws_provider = set_mocked_aws_provider()
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ), mock.patch(
             "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
@@ -96,7 +96,7 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
         aws_provider = set_mocked_aws_provider()
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ), mock.patch(
             "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
@@ -138,7 +138,7 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
         aws_provider._scan_unused_services = False
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ), mock.patch(
             "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
@@ -171,7 +171,7 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
         aws_provider._scan_unused_services = False
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ), mock.patch(
             "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
@@ -235,7 +235,7 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
         aws_provider = set_mocked_aws_provider()
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ), mock.patch(
             "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
@@ -295,7 +295,7 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
         aws_provider = set_mocked_aws_provider()
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ), mock.patch(
             "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
@@ -362,7 +362,7 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
         aws_provider = set_mocked_aws_provider()
 
         with mock.patch(
-            "prowler.providers.common.common.get_global_provider",
+            "prowler.providers.common.provider.Provider.get_global_provider",
             return_value=aws_provider,
         ), mock.patch(
             "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
@@ -389,3 +389,33 @@ class Test_cloudtrail_s3_dataevents_write_enabled:
             assert result[0].resource_arn == trail_us["TrailARN"]
             assert result[0].resource_tags == []
             assert result[0].region == AWS_REGION_US_EAST_1
+
+    @mock_aws
+    def test_access_denied(self):
+        from prowler.providers.aws.services.cloudtrail.cloudtrail_service import (
+            Cloudtrail,
+        )
+        from prowler.providers.aws.services.s3.s3_service import S3
+
+        aws_provider = set_mocked_aws_provider()
+
+        with mock.patch(
+            "prowler.providers.common.provider.Provider.get_global_provider",
+            return_value=aws_provider,
+        ), mock.patch(
+            "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.cloudtrail_client",
+            new=Cloudtrail(aws_provider),
+        ) as cloudtrail_service, mock.patch(
+            "prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled.s3_client",
+            new=S3(aws_provider),
+        ):
+            # Test Check
+            from prowler.providers.aws.services.cloudtrail.cloudtrail_s3_dataevents_write_enabled.cloudtrail_s3_dataevents_write_enabled import (
+                cloudtrail_s3_dataevents_write_enabled,
+            )
+
+            cloudtrail_service.trails = None
+            check = cloudtrail_s3_dataevents_write_enabled()
+            result = check.execute()
+
+            assert len(result) == 0

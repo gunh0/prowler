@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from prowler.lib.logger import logger
 from prowler.lib.scan_filters.scan_filters import is_resource_filtered
 from prowler.providers.aws.lib.service.service import AWSService
-from prowler.providers.aws.services.ec2.lib.security_groups import check_security_group
 
 
 ################## EC2
@@ -15,6 +14,7 @@ class EC2(AWSService):
     def __init__(self, provider):
         # Call AWSService's __init__
         super().__init__(__class__.__name__, provider)
+        self.account_arn_template = f"arn:{self.audited_partition}:ec2:{self.region}:{self.audited_account}:account"
         self.instances = []
         self.__threading_call__(self.__describe_instances__)
         self.__threading_call__(self.__get_instance_user_data__, self.instances)
@@ -34,10 +34,21 @@ class EC2(AWSService):
         self.__threading_call__(self.__describe_images__)
         self.volumes = []
         self.__threading_call__(self.__describe_volumes__)
+        self.attributes_for_regions = {}
+        self.__threading_call__(self.__get_resources_for_regions__)
         self.ebs_encryption_by_default = []
         self.__threading_call__(self.__get_ebs_encryption_settings__)
         self.elastic_ips = []
         self.__threading_call__(self.__describe_ec2_addresses__)
+        self.ebs_block_public_access_snapshots_states = []
+        self.__threading_call__(self.__get_snapshot_block_public_access_state__)
+        self.instance_metadata_defaults = []
+        self.__threading_call__(self.__get_instance_metadata_defaults__)
+        self.launch_templates = []
+        self.__threading_call__(self.__describe_launch_templates)
+        self.__threading_call__(
+            self.__get_launch_template_versions__, self.launch_templates
+        )
 
     def __get_volume_arn_template__(self, region):
         return (
@@ -56,33 +67,6 @@ class EC2(AWSService):
                         if not self.audit_resources or (
                             is_resource_filtered(arn, self.audit_resources)
                         ):
-                            http_tokens = None
-                            http_endpoint = None
-                            public_dns = None
-                            public_ip = None
-                            private_ip = None
-                            instance_profile = None
-                            monitoring_state = "disabled"
-                            if "MetadataOptions" in instance:
-                                http_tokens = instance["MetadataOptions"]["HttpTokens"]
-                                http_endpoint = instance["MetadataOptions"][
-                                    "HttpEndpoint"
-                                ]
-                            if (
-                                "PublicDnsName" in instance
-                                and "PublicIpAddress" in instance
-                            ):
-                                public_dns = instance["PublicDnsName"]
-                                public_ip = instance["PublicIpAddress"]
-                            if "Monitoring" in instance:
-                                monitoring_state = instance.get(
-                                    "Monitoring", {"State": "disabled"}
-                                ).get("State", "disabled")
-                            if "PrivateIpAddress" in instance:
-                                private_ip = instance["PrivateIpAddress"]
-                            if "IamInstanceProfile" in instance:
-                                instance_profile = instance["IamInstanceProfile"]
-
                             self.instances.append(
                                 Instance(
                                     id=instance["InstanceId"],
@@ -93,13 +77,24 @@ class EC2(AWSService):
                                     image_id=instance["ImageId"],
                                     launch_time=instance["LaunchTime"],
                                     private_dns=instance["PrivateDnsName"],
-                                    private_ip=private_ip,
-                                    public_dns=public_dns,
-                                    public_ip=public_ip,
-                                    http_tokens=http_tokens,
-                                    http_endpoint=http_endpoint,
-                                    instance_profile=instance_profile,
-                                    monitoring_state=monitoring_state,
+                                    private_ip=instance.get("PrivateIpAddress"),
+                                    public_dns=instance.get("PublicDnsName"),
+                                    public_ip=instance.get("PublicIpAddress"),
+                                    http_tokens=instance.get("MetadataOptions", {}).get(
+                                        "HttpTokens"
+                                    ),
+                                    http_endpoint=instance.get(
+                                        "MetadataOptions", {}
+                                    ).get("HttpEndpoint"),
+                                    instance_profile=instance.get("IamInstanceProfile"),
+                                    monitoring_state=instance.get(
+                                        "Monitoring", {"State": "disabled"}
+                                    ).get("State", "disabled"),
+                                    security_groups=[
+                                        sg["GroupId"]
+                                        for sg in instance.get("SecurityGroups", [])
+                                    ],
+                                    subnet_id=instance.get("SubnetId", ""),
                                     tags=instance.get("Tags"),
                                 )
                             )
@@ -120,17 +115,7 @@ class EC2(AWSService):
                         is_resource_filtered(arn, self.audit_resources)
                     ):
                         associated_sgs = []
-                        # check if sg has public access to all ports
-                        all_public_ports = False
                         for ingress_rule in sg["IpPermissions"]:
-                            if (
-                                check_security_group(
-                                    ingress_rule, "-1", any_address=True
-                                )
-                                and "ec2_securitygroup_allow_ingress_from_internet_to_any_port"
-                                in self.audited_checks
-                            ):
-                                all_public_ports = True
                             # check associated security groups
                             for sg_group in ingress_rule.get("UserIdGroupPairs", []):
                                 if sg_group.get("GroupId"):
@@ -143,7 +128,6 @@ class EC2(AWSService):
                                 id=sg["GroupId"],
                                 ingress_rules=sg["IpPermissions"],
                                 egress_rules=sg["IpPermissionsEgress"],
-                                public_ports=all_public_ports,
                                 associated_sgs=associated_sgs,
                                 vpc_id=sg["VpcId"],
                                 tags=sg.get("Tags"),
@@ -254,7 +238,7 @@ class EC2(AWSService):
                         id=interface["NetworkInterfaceId"],
                         association=interface.get("Association", {}),
                         attachment=interface.get("Attachment", {}),
-                        private_ip=interface["PrivateIpAddress"],
+                        private_ip=interface.get("PrivateIpAddress"),
                         type=interface["InterfaceType"],
                         subnet_id=interface["SubnetId"],
                         vpc_id=interface["VpcId"],
@@ -389,10 +373,10 @@ class EC2(AWSService):
 
     def __get_ebs_encryption_settings__(self, regional_client):
         try:
-            volumes_in_region = False
-            for volume in self.volumes:
-                if volume.region == regional_client.region:
-                    volumes_in_region = True
+            volumes_in_region = self.attributes_for_regions.get(
+                regional_client.region, []
+            )
+            volumes_in_region = volumes_in_region.get("has_volumes", False)
             self.ebs_encryption_by_default.append(
                 EbsEncryptionByDefault(
                     status=regional_client.get_ebs_encryption_by_default()[
@@ -402,6 +386,123 @@ class EC2(AWSService):
                     region=regional_client.region,
                 )
             )
+        except Exception as error:
+            logger.error(
+                f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+
+    def __get_snapshot_block_public_access_state__(self, regional_client):
+        try:
+            snapshots_in_region = self.attributes_for_regions.get(
+                regional_client.region, []
+            )
+            snapshots_in_region = snapshots_in_region.get("has_snapshots", False)
+            self.ebs_block_public_access_snapshots_states.append(
+                EbsSnapshotBlockPublicAccess(
+                    status=regional_client.get_snapshot_block_public_access_state()[
+                        "State"
+                    ],
+                    snapshots=snapshots_in_region,
+                    region=regional_client.region,
+                )
+            )
+        except Exception as error:
+            logger.error(
+                f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+
+    def __get_instance_metadata_defaults__(self, regional_client):
+        try:
+            instances_in_region = self.attributes_for_regions.get(
+                regional_client.region, []
+            )
+            instances_in_region = instances_in_region.get("has_instances", False)
+            metadata_defaults = regional_client.get_instance_metadata_defaults()
+            account_level = metadata_defaults.get("AccountLevel", {})
+            self.instance_metadata_defaults.append(
+                InstanceMetadataDefaults(
+                    http_tokens=account_level.get("HttpTokens", None),
+                    instances=instances_in_region,
+                    region=regional_client.region,
+                )
+            )
+        except Exception as error:
+            logger.error(
+                f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+
+    def __get_resources_for_regions__(self, regional_client):
+        try:
+            has_instances = False
+            for instance in self.instances:
+                if instance.region == regional_client.region:
+                    has_instances = True
+                    break
+            has_snapshots = False
+            for snapshot in self.snapshots:
+                if snapshot.region == regional_client.region:
+                    has_snapshots = True
+                    break
+            has_volumes = False
+            for volume in self.volumes:
+                if volume.region == regional_client.region:
+                    has_volumes = True
+                    break
+            self.attributes_for_regions[regional_client.region] = {
+                "has_instances": has_instances,
+                "has_snapshots": has_snapshots,
+                "has_volumes": has_volumes,
+            }
+        except Exception as error:
+            logger.error(
+                f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+
+    def __describe_launch_templates(self, regional_client):
+        try:
+            describe_launch_templates_paginator = regional_client.get_paginator(
+                "describe_launch_templates"
+            )
+
+            for page in describe_launch_templates_paginator.paginate():
+                for template in page["LaunchTemplates"]:
+                    template_arn = f"arn:aws:ec2:{regional_client.region}:{self.audited_account}:launch-template/{template['LaunchTemplateId']}"
+                    if not self.audit_resources or (
+                        is_resource_filtered(template_arn, self.audit_resources)
+                    ):
+                        self.launch_templates.append(
+                            LaunchTemplate(
+                                name=template["LaunchTemplateName"],
+                                id=template["LaunchTemplateId"],
+                                arn=template_arn,
+                                region=regional_client.region,
+                                versions=[],
+                            )
+                        )
+
+        except Exception as error:
+            logger.error(
+                f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
+            )
+
+    def __get_launch_template_versions__(self, launch_template):
+        try:
+            regional_client = self.regional_clients[launch_template.region]
+            describe_launch_template_versions_paginator = regional_client.get_paginator(
+                "describe_launch_template_versions"
+            )
+
+            for page in describe_launch_template_versions_paginator.paginate(
+                LaunchTemplateId=launch_template.id
+            ):
+                for template_version in page["LaunchTemplateVersions"]:
+                    launch_template.versions.append(
+                        LaunchTemplateVersion(
+                            version_number=template_version["VersionNumber"],
+                            template_data=template_version["LaunchTemplateData"],
+                        )
+                    )
+
         except Exception as error:
             logger.error(
                 f"{regional_client.region} -- {error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
@@ -424,6 +525,8 @@ class Instance(BaseModel):
     http_tokens: Optional[str]
     http_endpoint: Optional[str]
     monitoring_state: str
+    security_groups: list[str]
+    subnet_id: str
     instance_profile: Optional[dict]
     tags: Optional[list] = []
 
@@ -450,7 +553,7 @@ class NetworkInterface(BaseModel):
     id: str
     association: dict
     attachment: dict
-    private_ip: str
+    private_ip: Optional[str]
     type: str
     subnet_id: str
     vpc_id: str
@@ -464,7 +567,6 @@ class SecurityGroup(BaseModel):
     region: str
     id: str
     vpc_id: str
-    public_ports: bool
     associated_sgs: list
     network_interfaces: list[NetworkInterface] = []
     ingress_rules: list[dict]
@@ -503,3 +605,28 @@ class EbsEncryptionByDefault(BaseModel):
     status: bool
     volumes: bool
     region: str
+
+
+class EbsSnapshotBlockPublicAccess(BaseModel):
+    status: str
+    snapshots: bool
+    region: str
+
+
+class InstanceMetadataDefaults(BaseModel):
+    http_tokens: Optional[str]
+    instances: bool
+    region: str
+
+
+class LaunchTemplateVersion(BaseModel):
+    version_number: int
+    template_data: dict
+
+
+class LaunchTemplate(BaseModel):
+    name: str
+    id: str
+    arn: str
+    region: str
+    versions: list[LaunchTemplateVersion] = []

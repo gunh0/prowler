@@ -1,4 +1,5 @@
 from argparse import Namespace
+from json import dumps
 
 from boto3 import client, session
 from botocore.config import Config
@@ -50,6 +51,38 @@ AWS_ISO_PARTITION = "aws-iso"
 # EC2
 EXAMPLE_AMI_ID = "ami-12c6146b"
 
+# Lightsail
+BASE_LIGHTSAIL_ARN = f"arn:aws:lightsail:{AWS_REGION_US_EAST_1}:0000000000000:"
+
+
+# Administrator Policy
+ADMINISTRATOR_POLICY_NAME = "AdministratorPolicy"
+ADMINISTRATOR_POLICY_DOCUMENT = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "*",
+            ],
+            "Resource": "*",
+        },
+    ],
+}
+
+# Administrator Role
+ADMINISTRATOR_ROLE_NAME = "AdministratorRole"
+ADMINISTRATOR_ROLE_ASSUME_ROLE_POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {"AWS": f"arn:aws:iam::{AWS_ACCOUNT_NUMBER}:root"},
+            "Action": "sts:AssumeRole",
+        }
+    ],
+}
+
 
 # Mocked AWS Provider
 # This here causes to call this function mocking the AWS calls
@@ -62,6 +95,7 @@ def set_mocked_aws_provider(
     expected_checks: list[str] = [],
     profile_region: str = None,
     audit_config: dict = {},
+    fixer_config: dict = {},
     scan_unused_services: bool = True,
     audit_session: session.Session = session.Session(
         profile_name=None,
@@ -108,6 +142,7 @@ def set_mocked_aws_provider(
     provider._organizations_metadata = None
     provider._audit_resources = []
     provider._audit_config = audit_config
+    provider._fixer_config = fixer_config
     provider.audit_metadata = Audit_Metadata(
         services_scanned=0,
         expected_checks=expected_checks,
@@ -151,3 +186,27 @@ def create_default_aws_organization():
     _ = organizations_client.tag_resource(
         ResourceId=account_id, Tags=[{"Key": "test", "Value": "aws-provider"}]
     )
+
+
+def create_role(
+    region: str,
+    policy_name: str = ADMINISTRATOR_POLICY_NAME,
+    policy_document: dict = ADMINISTRATOR_POLICY_DOCUMENT,
+    role_name: str = ADMINISTRATOR_ROLE_NAME,
+    assume_role_policy_document: dict = ADMINISTRATOR_ROLE_ASSUME_ROLE_POLICY,
+) -> str:
+    iam_client = client("iam", region_name=region)
+    policy = iam_client.create_policy(
+        PolicyName=policy_name,
+        PolicyDocument=dumps(policy_document),
+    )["Policy"]
+
+    administrator_role = iam_client.create_role(
+        RoleName=role_name,
+        AssumeRolePolicyDocument=dumps(assume_role_policy_document),
+    )["Role"]
+    iam_client.attach_role_policy(
+        RoleName=role_name,
+        PolicyArn=policy["Arn"],
+    )
+    return administrator_role["Arn"]

@@ -3,16 +3,17 @@ import os
 import re
 import tempfile
 from argparse import Namespace
-from datetime import datetime
+from datetime import datetime, timedelta
 from json import dumps
 from os import rmdir
 from re import search
 
 import botocore
-from boto3 import client, session
+from boto3 import client, resource, session
 from freezegun import freeze_time
 from mock import patch
 from moto import mock_aws
+from tzlocal import get_localzone
 
 from prowler.providers.aws.aws_provider import (
     AwsProvider,
@@ -34,6 +35,7 @@ from prowler.providers.aws.models import (
     AWSOrganizationsInfo,
     AWSOutputOptions,
 )
+from prowler.providers.common.provider import Provider
 from tests.providers.aws.utils import (
     AWS_ACCOUNT_ARN,
     AWS_ACCOUNT_NUMBER,
@@ -50,9 +52,10 @@ from tests.providers.aws.utils import (
     AWS_REGION_US_EAST_1,
     AWS_REGION_US_EAST_2,
     EXAMPLE_AMI_ID,
+    create_role,
+    set_mocked_aws_provider,
 )
 
-# Mocking GetCallerIdentity for China and GovCloud
 make_api_call = botocore.client.BaseClient._make_api_call
 
 
@@ -265,7 +268,7 @@ class TestAWSProvider:
         assert isinstance(aws_provider.organizations_metadata, AWSOrganizationsInfo)
         assert aws_provider.organizations_metadata.account_email == "master@example.com"
         assert aws_provider.organizations_metadata.account_name == "master"
-        assert aws_provider.organizations_metadata.account_tags == "tagged:true"
+        assert aws_provider.organizations_metadata.account_tags == ["tagged:true"]
         assert (
             aws_provider.organizations_metadata.organization_account_arn
             == f"arn:aws:organizations::{AWS_ACCOUNT_NUMBER}:account/{organization['Id']}/{AWS_ACCOUNT_NUMBER}"
@@ -274,6 +277,19 @@ class TestAWSProvider:
         assert (
             aws_provider.organizations_metadata.organization_arn == organization["Arn"]
         )
+
+    @mock_aws
+    def test_aws_provider_organizations_none_organizations_metadata(self):
+        arguments = Namespace()
+        aws_provider = AwsProvider(arguments)
+
+        assert isinstance(aws_provider.organizations_metadata, AWSOrganizationsInfo)
+        assert aws_provider.organizations_metadata.account_email == ""
+        assert aws_provider.organizations_metadata.account_name == ""
+        assert aws_provider.organizations_metadata.account_tags == []
+        assert aws_provider.organizations_metadata.organization_account_arn == ""
+        assert aws_provider.organizations_metadata.organization_id == ""
+        assert aws_provider.organizations_metadata.organization_arn == ""
 
     @mock_aws
     def test_aws_provider_organizations_with_role(self):
@@ -297,7 +313,7 @@ class TestAWSProvider:
             PolicyName=policy_name,
             PolicyDocument=dumps(policy_document),
         )["Policy"]
-        print(policy)
+
         assume_policy_document = {
             "Version": "2012-10-17",
             "Statement": [
@@ -333,7 +349,7 @@ class TestAWSProvider:
         assert isinstance(aws_provider.organizations_metadata, AWSOrganizationsInfo)
         assert aws_provider.organizations_metadata.account_email == "master@example.com"
         assert aws_provider.organizations_metadata.account_name == "master"
-        assert aws_provider.organizations_metadata.account_tags == "tagged:true"
+        assert aws_provider.organizations_metadata.account_tags == ["tagged:true"]
         assert (
             aws_provider.organizations_metadata.organization_account_arn
             == f"arn:aws:organizations::{AWS_ACCOUNT_NUMBER}:account/{organization['Id']}/{AWS_ACCOUNT_NUMBER}"
@@ -511,46 +527,174 @@ aws:
     @mock_aws
     def test_aws_provider_mutelist(self):
         mutelist = {
-            "Accounts": {
-                AWS_ACCOUNT_NUMBER: {
-                    "Checks": {
-                        "test-check": {
-                            "Regions": [],
-                            "Resources": [],
-                            "Tags": [],
-                            "Exceptions": {
-                                "Accounts": [],
+            "Mutelist": {
+                "Accounts": {
+                    AWS_ACCOUNT_NUMBER: {
+                        "Checks": {
+                            "test-check": {
                                 "Regions": [],
                                 "Resources": [],
                                 "Tags": [],
-                            },
+                                "Exceptions": {
+                                    "Accounts": [],
+                                    "Regions": [],
+                                    "Resources": [],
+                                    "Tags": [],
+                                },
+                            }
                         }
                     }
                 }
             }
         }
-        mutelist_content = {"Mutelist": mutelist}
 
-        config_file = tempfile.NamedTemporaryFile(delete=False)
-        with open(config_file.name, "w") as allowlist_file:
-            allowlist_file.write(json.dumps(mutelist_content, indent=4))
+        mutelist_file = tempfile.NamedTemporaryFile(delete=False)
+        with open(mutelist_file.name, "w") as mutelist_file:
+            mutelist_file.write(json.dumps(mutelist, indent=4))
 
         arguments = Namespace()
         aws_provider = AwsProvider(arguments)
 
-        aws_provider.mutelist = config_file.name
+        aws_provider.mutelist = mutelist_file.name
 
-        os.remove(config_file.name)
+        os.remove(mutelist_file.name)
 
-        assert aws_provider.mutelist == mutelist
+        assert aws_provider.mutelist == mutelist["Mutelist"]
 
     @mock_aws
     def test_aws_provider_mutelist_none(self):
         arguments = Namespace()
         aws_provider = AwsProvider(arguments)
-        aws_provider.mutelist = None
+
+        with patch(
+            "prowler.providers.aws.aws_provider.get_default_mute_file_path",
+            return_value=None,
+        ):
+            aws_provider.mutelist = None
 
         assert aws_provider.mutelist == {}
+
+    @mock_aws
+    def test_aws_provider_mutelist_s3(self):
+        # Create mutelist temp file
+        mutelist = {
+            "Mutelist": {
+                "Accounts": {
+                    AWS_ACCOUNT_NUMBER: {
+                        "Checks": {
+                            "test-check": {
+                                "Regions": [],
+                                "Resources": [],
+                                "Tags": [],
+                                "Exceptions": {
+                                    "Accounts": [],
+                                    "Regions": [],
+                                    "Resources": [],
+                                    "Tags": [],
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        mutelist_file = tempfile.NamedTemporaryFile(delete=False)
+        with open(mutelist_file.name, "w") as mutelist_file:
+            mutelist_file.write(json.dumps(mutelist, indent=4))
+
+        # Create bucket and upload mutelist yaml
+        s3_resource = resource("s3", region_name=AWS_REGION_US_EAST_1)
+        bucket_name = "test-mutelist"
+        mutelist_file_name = "mutelist.yaml"
+        mutelist_bucket_object_uri = f"s3://{bucket_name}/{mutelist_file_name}"
+        s3_resource.create_bucket(Bucket=bucket_name)
+        s3_resource.Object(bucket_name, "mutelist.yaml").put(
+            Body=open(
+                mutelist_file.name,
+                "rb",
+            )
+        )
+
+        arguments = Namespace()
+        aws_provider = AwsProvider(arguments)
+
+        aws_provider.mutelist = mutelist_bucket_object_uri
+        os.remove(mutelist_file.name)
+
+        assert aws_provider.mutelist == mutelist["Mutelist"]
+
+    @mock_aws
+    def test_aws_provider_mutelist_lambda(self):
+        # Create mutelist temp file
+        mutelist = {
+            "Mutelist": {
+                "Accounts": {
+                    AWS_ACCOUNT_NUMBER: {
+                        "Checks": {
+                            "test-check": {
+                                "Regions": [],
+                                "Resources": [],
+                                "Tags": [],
+                                "Exceptions": {
+                                    "Accounts": [],
+                                    "Regions": [],
+                                    "Resources": [],
+                                    "Tags": [],
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        arguments = Namespace()
+        aws_provider = AwsProvider(arguments)
+
+        with patch(
+            "prowler.providers.aws.aws_provider.get_mutelist_file_from_lambda",
+            return_value=mutelist["Mutelist"],
+        ):
+            aws_provider.mutelist = f"arn:aws:lambda:{AWS_REGION_EU_WEST_1}:{AWS_ACCOUNT_NUMBER}:function:lambda-mutelist"
+
+        assert aws_provider.mutelist == mutelist["Mutelist"]
+
+    @mock_aws
+    def test_aws_provider_mutelist_dynamodb(self):
+        # Create mutelist temp file
+        mutelist = {
+            "Mutelist": {
+                "Accounts": {
+                    AWS_ACCOUNT_NUMBER: {
+                        "Checks": {
+                            "test-check": {
+                                "Regions": [],
+                                "Resources": [],
+                                "Tags": [],
+                                "Exceptions": {
+                                    "Accounts": [],
+                                    "Regions": [],
+                                    "Resources": [],
+                                    "Tags": [],
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        arguments = Namespace()
+        aws_provider = AwsProvider(arguments)
+
+        with patch(
+            "prowler.providers.aws.aws_provider.get_mutelist_file_from_dynamodb",
+            return_value=mutelist["Mutelist"],
+        ):
+            aws_provider.mutelist = f"arn:aws:dynamodb:{AWS_REGION_EU_WEST_1}:{AWS_ACCOUNT_NUMBER}:table/mutelist-dynamo"
+
+        assert aws_provider.mutelist == mutelist["Mutelist"]
 
     @mock_aws
     def test_generate_regional_clients_all_enabled_regions(self):
@@ -819,32 +963,38 @@ aws:
         arguments.send_sh_only_fails = True
 
         aws_provider = AwsProvider(arguments)
+        # This is needed since the output_options requires to get the global provider to get the audit config
+        with patch(
+            "prowler.providers.common.provider.Provider.get_global_provider",
+            return_value=aws_provider,
+        ):
 
-        aws_provider.output_options = arguments, {}
+            aws_provider.output_options = arguments, {}
 
-        assert isinstance(aws_provider.output_options, AWSOutputOptions)
-        assert aws_provider.output_options.security_hub_enabled
-        assert aws_provider.output_options.send_sh_only_fails
-        assert aws_provider.output_options.status == ["FAIL"]
-        assert aws_provider.output_options.output_modes == ["csv", "json-asff"]
-        assert (
-            aws_provider.output_options.output_directory == arguments.output_directory
-        )
-        assert aws_provider.output_options.bulk_checks_metadata == {}
-        assert aws_provider.output_options.verbose
-        assert (
-            f"prowler-output-{AWS_ACCOUNT_NUMBER}"
-            in aws_provider.output_options.output_filename
-        )
-        # Flaky due to the millisecond part of the timestamp
-        # assert (
-        #     aws_provider.output_options.output_filename
-        #     == f"prowler-output-{AWS_ACCOUNT_NUMBER}-{datetime.today().strftime('%Y%m%d%H%M%S')}"
-        # )
+            assert isinstance(aws_provider.output_options, AWSOutputOptions)
+            assert aws_provider.output_options.security_hub_enabled
+            assert aws_provider.output_options.send_sh_only_fails
+            assert aws_provider.output_options.status == ["FAIL"]
+            assert aws_provider.output_options.output_modes == ["csv", "json-asff"]
+            assert (
+                aws_provider.output_options.output_directory
+                == arguments.output_directory
+            )
+            assert aws_provider.output_options.bulk_checks_metadata == {}
+            assert aws_provider.output_options.verbose
+            assert (
+                f"prowler-output-{AWS_ACCOUNT_NUMBER}"
+                in aws_provider.output_options.output_filename
+            )
+            # Flaky due to the millisecond part of the timestamp
+            # assert (
+            #     aws_provider.output_options.output_filename
+            #     == f"prowler-output-{AWS_ACCOUNT_NUMBER}-{datetime.today().strftime('%Y%m%d%H%M%S')}"
+            # )
 
-        # Delete testing directory
-        rmdir(f"{arguments.output_directory}/compliance")
-        rmdir(arguments.output_directory)
+            # Delete testing directory
+            rmdir(f"{arguments.output_directory}/compliance")
+            rmdir(arguments.output_directory)
 
     @mock_aws
     @freeze_time(datetime.today())
@@ -862,24 +1012,32 @@ aws:
         arguments.send_sh_only_fails = True
 
         aws_provider = AwsProvider(arguments)
+        # This is needed since the output_options requires to get the global provider to get the audit config
+        with patch(
+            "prowler.providers.common.provider.Provider.get_global_provider",
+            return_value=aws_provider,
+        ):
 
-        aws_provider.output_options = arguments, {}
+            aws_provider.output_options = arguments, {}
 
-        assert isinstance(aws_provider.output_options, AWSOutputOptions)
-        assert aws_provider.output_options.security_hub_enabled
-        assert aws_provider.output_options.send_sh_only_fails
-        assert aws_provider.output_options.status == []
-        assert aws_provider.output_options.output_modes == ["csv", "json-asff"]
-        assert (
-            aws_provider.output_options.output_directory == arguments.output_directory
-        )
-        assert aws_provider.output_options.bulk_checks_metadata == {}
-        assert aws_provider.output_options.verbose
-        assert aws_provider.output_options.output_filename == arguments.output_filename
+            assert isinstance(aws_provider.output_options, AWSOutputOptions)
+            assert aws_provider.output_options.security_hub_enabled
+            assert aws_provider.output_options.send_sh_only_fails
+            assert aws_provider.output_options.status == []
+            assert aws_provider.output_options.output_modes == ["csv", "json-asff"]
+            assert (
+                aws_provider.output_options.output_directory
+                == arguments.output_directory
+            )
+            assert aws_provider.output_options.bulk_checks_metadata == {}
+            assert aws_provider.output_options.verbose
+            assert (
+                aws_provider.output_options.output_filename == arguments.output_filename
+            )
 
-        # Delete testing directory
-        rmdir(f"{arguments.output_directory}/compliance")
-        rmdir(arguments.output_directory)
+            # Delete testing directory
+            rmdir(f"{arguments.output_directory}/compliance")
+            rmdir(arguments.output_directory)
 
     @mock_aws
     def test_validate_credentials_commercial_partition_with_regions(self):
@@ -1365,3 +1523,98 @@ aws:
         aws_provider.get_checks_to_execute_by_audit_resources() == {
             "ec2_networkacl_allow_ingress_any_port"
         }
+
+    def test_update_provider_config_aws(self):
+        aws_provider = set_mocked_aws_provider(
+            audit_config={"shodan_api_key": "DEFAULT-KEY"}
+        )
+
+        with patch(
+            "prowler.providers.common.provider.Provider.get_global_provider",
+            return_value=aws_provider,
+        ):
+
+            assert {
+                "shodan_api_key": "TEST-API-KEY"
+            } == Provider.update_provider_config(
+                aws_provider.audit_config, "shodan_api_key", "TEST-API-KEY"
+            )
+
+    def test_update_provider_config_aws_not_present(self):
+        aws_provider = set_mocked_aws_provider(
+            audit_config={"shodan_api_key": "DEFAULT-KEY"}
+        )
+
+        with patch(
+            "prowler.providers.common.provider.Provider.get_global_provider",
+            return_value=aws_provider,
+        ):
+
+            assert {"shodan_api_key": "DEFAULT-KEY"} == Provider.update_provider_config(
+                aws_provider.audit_config, "not_found", "not_value"
+            )
+
+    @mock_aws
+    def test_refresh_credentials_before_expiration(self):
+        role_arn = create_role(AWS_REGION_EU_WEST_1)
+        arguments = Namespace()
+        arguments.role = role_arn
+        arguments.session_duration = 900
+        aws_provider = AwsProvider(arguments)
+
+        current_credentials = (
+            aws_provider._assumed_role_configuration.credentials.__dict__
+        )
+        refreshed_credentials = {
+            "access_key": current_credentials["aws_access_key_id"],
+            "secret_key": current_credentials["aws_secret_access_key"],
+            "token": current_credentials["aws_session_token"],
+            "expiry_time": current_credentials.get(
+                "expiration", current_credentials.get("expiry_time")
+            ).isoformat(),
+        }
+
+        assert aws_provider.refresh_credentials() == refreshed_credentials
+
+    @mock_aws
+    def test_refresh_credentials_after_expiration(self):
+        role_arn = create_role(AWS_REGION_EU_WEST_1)
+        session_duration_in_seconds = 900
+        arguments = Namespace()
+        arguments.role = role_arn
+        arguments.session_duration = session_duration_in_seconds
+        aws_provider = AwsProvider(arguments)
+
+        # Manually expire credentials
+        aws_provider._assumed_role_configuration.credentials.expiration = datetime.now(
+            get_localzone()
+        ) - timedelta(seconds=session_duration_in_seconds)
+
+        current_credentials = aws_provider._assumed_role_configuration.credentials
+
+        # Refresh credentials
+        refreshed_credentials = aws_provider.refresh_credentials()
+
+        # Assert that the refreshed credentials are different
+        access_key = refreshed_credentials.get("access_key")
+        assert access_key != current_credentials.aws_access_key_id
+
+        secret_key = refreshed_credentials.get("secret_key")
+        assert secret_key != current_credentials.aws_secret_access_key
+
+        session_token = refreshed_credentials.get("token")
+        assert session_token != current_credentials.aws_session_token
+
+        expiry_time = refreshed_credentials.get("expiry_time")
+        expiry_time_formatted = datetime.fromisoformat(expiry_time)
+        assert expiry_time != current_credentials.expiration
+        assert datetime.now(get_localzone()) < expiry_time_formatted
+
+        # Assert credentials format
+        assert len(access_key) == 20
+        assert search(r"^ASIA.*$", access_key)
+
+        assert len(secret_key) == 40
+
+        assert len(session_token) == 356
+        assert search(r"^FQoGZXIvYXdzE.*$", session_token)

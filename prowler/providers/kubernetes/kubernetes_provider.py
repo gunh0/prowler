@@ -3,11 +3,11 @@ import sys
 from argparse import Namespace
 
 from colorama import Fore, Style
+from kubernetes.config.config_exception import ConfigException
 
 from kubernetes import client, config
 from prowler.config.config import load_and_validate_config_file
 from prowler.lib.logger import logger
-from prowler.lib.mutelist.mutelist import parse_mutelist_file
 from prowler.lib.utils.utils import print_boxes
 from prowler.providers.common.models import Audit_Metadata
 from prowler.providers.common.provider import Provider
@@ -113,18 +113,6 @@ class KubernetesProvider(Provider):
             # "partition": "identity.partition",
         }
 
-    @property
-    def mutelist(self):
-        return self._mutelist
-
-    @mutelist.setter
-    def mutelist(self, mutelist_path):
-        if mutelist_path:
-            mutelist = parse_mutelist_file(mutelist_path)
-        else:
-            mutelist = {}
-        self._mutelist = mutelist
-
     def setup_session(self, kubeconfig_file, input_context) -> KubernetesSession:
         """
         Sets up the Kubernetes session.
@@ -137,19 +125,18 @@ class KubernetesProvider(Provider):
             Tuple: A tuple containing the API client and the context.
         """
         try:
-            if kubeconfig_file:
-                logger.info(f"Using kubeconfig file: {kubeconfig_file}")
+            logger.info(f"Using kubeconfig file: {kubeconfig_file}")
+            try:
                 config.load_kube_config(
-                    config_file=os.path.abspath(kubeconfig_file), context=input_context
+                    config_file=(
+                        os.path.abspath(kubeconfig_file)
+                        if kubeconfig_file != "~/.kube/config"
+                        else os.path.expanduser(kubeconfig_file)
+                    ),
+                    context=input_context,
                 )
-                if input_context:
-                    contexts = config.list_kube_config_contexts()[0]
-                    for context_item in contexts:
-                        if context_item["name"] == input_context:
-                            context = context_item
-                else:
-                    context = config.list_kube_config_contexts()[1]
-            else:
+            except ConfigException:
+                # If the kubeconfig file is not found, try to use the in-cluster config
                 logger.info("Using in-cluster config")
                 config.load_incluster_config()
                 context = {
@@ -159,6 +146,14 @@ class KubernetesProvider(Provider):
                         "user": "service-account-name",  # Also a placeholder
                     },
                 }
+            else:
+                if input_context:
+                    contexts = config.list_kube_config_contexts()[0]
+                    for context_item in contexts:
+                        if context_item["name"] == input_context:
+                            context = context_item
+                else:
+                    context = config.list_kube_config_contexts()[1]
             return KubernetesSession(api_client=client.ApiClient(), context=context)
         except Exception as error:
             logger.critical(

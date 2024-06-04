@@ -39,6 +39,9 @@ The following list includes all the AWS checks with configurable variables that 
 | `cloudtrail_threat_detection_enumeration`                      | `threat_detection_enumeration_entropy`      | Integer         |
 | `cloudtrail_threat_detection_enumeration`                      | `threat_detection_enumeration_minutes`      | Integer         |
 | `cloudtrail_threat_detection_enumeration`                      | `threat_detection_enumeration_actions`      | List of Strings         |
+| `rds_instance_backup_enabled`                                  | `check_rds_instance_replicas`      | Boolean        |
+| `ec2_securitygroup_allow_ingress_from_internet_to_any_port`    | `ec2_allowed_interface_types`      | List of Strings        |
+| `ec2_securitygroup_allow_ingress_from_internet_to_any_port`    | `ec2_allowed_instance_owners`      | List of Strings        |
 ## Azure
 
 ### Configurable Checks
@@ -95,6 +98,18 @@ aws:
   max_security_group_rules: 50
   # aws.ec2_instance_older_than_specific_days --> by default is 6 months (180 days)
   max_ec2_instance_age_in_days: 180
+  # aws.ec2_securitygroup_allow_ingress_from_internet_to_any_port
+  # allowed network interface types for security groups open to the Internet
+  ec2_allowed_interface_types:
+    [
+      "api_gateway_managed",
+      "vpc_endpoint",
+    ]
+  # allowed network interface owners for security groups open to the Internet
+  ec2_allowed_instance_owners:
+    [
+      "amazon-elb"
+    ]
 
   # AWS VPC Configuration (vpc_endpoint_connections_trust_boundaries, vpc_endpoint_services_allowed_principals_trust_boundaries)
   # Single account environment: No action required. The AWS account number will be automatically added by the checks.
@@ -209,7 +224,7 @@ aws:
     "UpdateFunctionCode",
     "UpdateJob",
     "UpdateLoginProfile",
-]
+  ]
   # aws.cloudtrail_threat_detection_enumeration
   threat_detection_enumeration_entropy: 0.7 # Percentage of actions found to decide if it is an enumeration attack event, by default is 0.7 (70%)
   threat_detection_enumeration_minutes: 1440 # Past minutes to search from now for enumeration attacks, by default is 1440 minutes (24 hours)
@@ -304,7 +319,11 @@ aws:
     "ListUsers",
     "LookupEvents",
     "Search",
-]
+  ]
+
+  # aws.rds_instance_backup_enabled
+  # Whether to check RDS instance replicas or not
+  check_rds_instance_replicas: False
 
 # Azure Configuration
 azure:

@@ -22,7 +22,6 @@ from prowler.lib.logger import logger
 from prowler.lib.mutelist.mutelist import mutelist_findings
 from prowler.lib.outputs.outputs import report
 from prowler.lib.utils.utils import open_file, parse_json_file, print_boxes
-from prowler.providers.common.common import get_global_provider
 from prowler.providers.common.models import Audit_Metadata
 
 
@@ -500,12 +499,30 @@ def run_fixer(check_findings: list) -> int:
                     )
                     for finding in findings:
                         if finding.status == "FAIL":
-                            # Check if fixer has region as argument to check if it is a region specific fixer
-                            if "region" in fixer.__code__.co_varnames:
+                            # Check what type of fixer is:
+                            # - If it is a fixer for a specific resource and region
+                            # - If it is a fixer for a specific region
+                            # - If it is a fixer for a specific resource
+                            if (
+                                "region" in fixer.__code__.co_varnames
+                                and "resource_id" in fixer.__code__.co_varnames
+                            ):
+                                print(
+                                    f"\t{orange_color}FIXING{Style.RESET_ALL} {finding.resource_id} in {finding.region}... "
+                                )
+                                if fixer(
+                                    resource_id=finding.resource_id,
+                                    region=finding.region,
+                                ):
+                                    fixed_findings += 1
+                                    print(f"\t{Fore.GREEN}DONE{Style.RESET_ALL}")
+                                else:
+                                    print(f"\t{Fore.RED}ERROR{Style.RESET_ALL}")
+                            elif "region" in fixer.__code__.co_varnames:
                                 print(
                                     f"\t{orange_color}FIXING{Style.RESET_ALL} {finding.region}... "
                                 )
-                                if fixer(finding.region):
+                                if fixer(region=finding.region):
                                     fixed_findings += 1
                                     print(f"\t{Fore.GREEN}DONE{Style.RESET_ALL}")
                                 else:
@@ -514,7 +531,7 @@ def run_fixer(check_findings: list) -> int:
                                 print(
                                     f"\t{orange_color}FIXING{Style.RESET_ALL} Resource {finding.resource_id}... "
                                 )
-                                if fixer(finding.resource_id):
+                                if fixer(resource_id=finding.resource_id):
                                     fixed_findings += 1
                                     print(f"\t\t{Fore.GREEN}DONE{Style.RESET_ALL}")
                                 else:
@@ -530,7 +547,6 @@ def execute_checks(
     checks_to_execute: list,
     global_provider: Any,
     custom_checks_metadata: Any,
-    mutelist_file: str,
     config_file: str,
 ) -> list:
     # List to store all the check's findings
@@ -538,9 +554,6 @@ def execute_checks(
     # Services and checks executed for the Audit Status
     services_executed = set()
     checks_executed = set()
-
-    # TODO: why is this here?
-    global_provider = get_global_provider()
 
     # Initialize the Audit Metadata
     # TODO: this should be done in the provider class
@@ -551,6 +564,7 @@ def execute_checks(
         audit_progress=0,
     )
 
+    # Refactor(CLI): This needs to be moved somewhere in the CLI
     if os.name != "nt":
         try:
             from resource import RLIMIT_NOFILE, getrlimit, setrlimit
@@ -578,8 +592,7 @@ def execute_checks(
                 check_findings = execute(
                     service,
                     check_name,
-                    global_provider.type,
-                    global_provider.identity,
+                    global_provider,
                     services_executed,
                     checks_executed,
                     custom_checks_metadata,
@@ -598,9 +611,9 @@ def execute_checks(
     else:
         # Prepare your messages
         messages = [f"Config File: {Fore.YELLOW}{config_file}{Style.RESET_ALL}"]
-        if mutelist_file:
+        if global_provider.mutelist_file_path:
             messages.append(
-                f"Mutelist File: {Fore.YELLOW}{mutelist_file}{Style.RESET_ALL}"
+                f"Mutelist File: {Fore.YELLOW}{global_provider.mutelist_file_path}{Style.RESET_ALL}"
             )
         if global_provider.type == "aws":
             messages.append(
@@ -701,9 +714,11 @@ def execute(
                 check_findings,
             )
 
+        # Refactor(Outputs)
         # Report the check's findings
         report(check_findings, global_provider)
 
+        # Refactor(Outputs)
         if os.environ.get("PROWLER_REPORT_LIB_PATH"):
             try:
                 logger.info("Using custom report interface ...")
@@ -717,6 +732,11 @@ def execute(
                 )
             except Exception:
                 sys.exit(1)
+    except ModuleNotFoundError:
+        logger.error(
+            f"Check '{check_name}' was not found for the {global_provider.type.upper()} provider"
+        )
+        check_findings = []
     except Exception as error:
         logger.error(
             f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}]: {error}"
